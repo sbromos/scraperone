@@ -4,6 +4,7 @@
 !.gitignore
 !monete_links.json
 !scraperone/
+!scraperone/README.md
 !scraperone/scraperissimo.py
 !scraperone/.env.example
 !scraperone/requirements.txt
