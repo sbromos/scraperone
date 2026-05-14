@@ -8,4 +8,7 @@
 !scraperone/.env.example
 !scraperone/requirements.txt
 !scraperone/image_storage.py
+
+# Ripristino cartella poi file (solo !file non basta se la parent è coperta da "*")
+!utils/
 !utils/download.py
