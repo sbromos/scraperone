@@ -1,0 +1,9 @@
+# Ignora tutti i file; solo i percorsi sotto "!..." sono tracciati da Git
+*
+
+!.gitignore
+!monete_links.json
+!scraperone/
+!scraperone/scraperissimo.py
+!scraperone/.env.example
+!scraperone/requirements.txt
