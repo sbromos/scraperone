@@ -7,3 +7,5 @@
 !scraperone/scraperissimo.py
 !scraperone/.env.example
 !scraperone/requirements.txt
+!scraperone/image_storage.py
+!utils/download.py
