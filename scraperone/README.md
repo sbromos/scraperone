@@ -4,6 +4,33 @@ Di default, le immagini vengono salvate localmente nel percorso `images/...`.
 
 ## Installazione dipendenze
 
+### Ubuntu Server 24.04 / 26.04 LTS
+
+Installa prima i pacchetti di sistema necessari (Python 3, pip, librerie SSL e header di sviluppo):
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-pip python3-venv python3-dev \
+    libssl-dev libffi-dev ca-certificates
+```
+
+Crea un virtualenv (consigliato) e installa le dipendenze Python:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+Per eseguire lo scraper ricordati di attivare il virtualenv ogni volta:
+
+```bash
+source .venv/bin/activate
+```
+
+### macOS / altri sistemi
+
 Da `scraperone/`:
 
 ```bash
