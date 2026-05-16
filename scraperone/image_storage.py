@@ -77,6 +77,8 @@ class R2ImageStorageBackend:
         self._client_error_types = ()
         try:
             import boto3
+            import certifi
+            from botocore.config import Config as BotoCoreConfig
             from botocore.exceptions import BotoCoreError, ClientError
         except Exception as exc:
             raise RuntimeError(f"boto3/botocore non disponibili: {exc}") from exc
@@ -87,6 +89,8 @@ class R2ImageStorageBackend:
             aws_access_key_id=config.access_key_id,
             aws_secret_access_key=config.secret_access_key,
             region_name="auto",
+            verify=certifi.where(),
+            config=BotoCoreConfig(retries={"max_attempts": 3, "mode": "standard"}),
         )
 
     def _build_public_url(self, key: str) -> str:
