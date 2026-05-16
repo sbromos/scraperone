@@ -29,7 +29,9 @@ gli JPEG non vengono riscaricati (log ``[img resume]``).
 Parallelismo (``--workers`` > 1): ogni moneta è elaborata in un worker thread dedicato
 con ``requests.Session`` separata (``threading.local``); il throttle ``--min-host-interval``
 (uso consigliato ≥ 1.0 s per host) serializza gli intervalli minimi per ``netloc``. L'ordine
-dei record nel JSON coincide con l'ordine degli URL in input (come a 1 worker).
+dei record nel JSON coincide con l'ordine degli URL in input (come a 1 worker). Più worker
+aumentano throughput ma tengono più pagine OCRE / soup / risultati concorrenti in RAM;
+``--low-memory`` imposta ``--workers 1`` e checkpoint sharded (vedi sotto).
 
 
 Regole sul dict parsato (pre-download): due URL distinti → split; stesso URL,
@@ -62,7 +64,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Set, Tuple
 from urllib.parse import quote, urlparse, urljoin, parse_qsl, urlencode, urlunparse
 
 import requests
@@ -102,6 +104,11 @@ class FaultToleranceConfig:
 class CheckpointConfig:
     path: Path
     frequency_items: int = 10
+    """Se True, checkpoint su manifest JSON + directory ``*.parts`` (un record per file)."""
+    sharded: bool = False
+
+
+CHECKPOINT_FORMAT_SHARDED_V1 = "sharded_v1"
 
 
 class ParseProcessingError(Exception):
@@ -684,6 +691,27 @@ def normalize_ocre_source_key(url: str) -> str:
     return normalize_text(url).lower()
 
 
+def _shallow_row_copy(row: Any) -> Any:
+    return dict(row) if isinstance(row, dict) else row
+
+
+def slim_coin_record_for_resume(rec: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Riduce i dict tenuti in RAM per il resume immagini: solo chiavi usate da
+    ``match_previous_coin_record`` / ``save_coin_images_local`` (layout e path).
+    """
+    slim: Dict[str, Any] = {}
+    if SOURCE_OCRE_URL_KEY in rec:
+        slim[SOURCE_OCRE_URL_KEY] = rec[SOURCE_OCRE_URL_KEY]
+    imgs = rec.get("images")
+    if isinstance(imgs, list):
+        slim["images"] = [_shallow_row_copy(x) for x in imgs if isinstance(x, dict)]
+    legacy = rec.get("image_sets")
+    if isinstance(legacy, list):
+        slim["image_sets"] = [_shallow_row_copy(x) for x in legacy]
+    return slim
+
+
 def load_previous_results_for_resume(out_path: Path) -> Optional[List[Dict[str, Any]]]:
     """
     Carica l'output JSON precedente se presente e valido (lista di record).
@@ -700,22 +728,83 @@ def load_previous_results_for_resume(out_path: Path) -> Optional[List[Dict[str, 
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
     if isinstance(data, list):
-        return [x for x in data if isinstance(x, dict)]
+        slimmed = [slim_coin_record_for_resume(x) for x in data if isinstance(x, dict)]
+        del data
+        return slimmed
     return None
 
 
-def load_checkpoint(checkpoint_path: Path) -> Tuple[Set[int], Dict[int, Dict[str, Any]]]:
+def load_checkpoint(
+    checkpoint_path: Path,
+) -> Tuple[Set[int], Dict[int, Dict[str, Any]], bool]:
+    """
+    Carica checkpoint da disco.
+
+    Terzo valore: ``legacy_inline_on_disk`` è True se il file era in formato
+    monolitico (``results_by_index`` nel manifest). Serve a ``--checkpoint-sharded``:
+    al primo salvataggio vanno scritti tutti i ``.parts`` già presenti in RAM.
+    """
     if not checkpoint_path.is_file():
-        return set(), {}
+        return set(), {}, False
     try:
         payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         logger.warning("Checkpoint non leggibile/corrotto (%s), riparto senza checkpoint.", checkpoint_path)
-        return set(), {}
+        return set(), {}, False
+
+    fmt = payload.get("checkpoint_format")
+    if fmt == CHECKPOINT_FORMAT_SHARDED_V1:
+        parts_rel = payload.get("parts_dir") or (checkpoint_path.name + ".parts")
+        parts_dir = checkpoint_path.parent / str(parts_rel)
+        done_raw = payload.get("completed_indices", [])
+        out_done: Set[int] = set()
+        if isinstance(done_raw, list):
+            for v in done_raw:
+                if isinstance(v, int) and v >= 0:
+                    out_done.add(v)
+        out_items: Dict[int, Dict[str, Any]] = {}
+        for idx in sorted(out_done):
+            part_path = parts_dir / f"{idx:08d}.json"
+            if not part_path.is_file():
+                logger.warning(
+                    "Checkpoint sharded: indice %s in manifest ma file assente (%s).",
+                    idx,
+                    part_path,
+                )
+                continue
+            try:
+                row = json.loads(part_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+                logger.warning("Checkpoint sharded: part illeggibile %s (%s).", part_path, e)
+                continue
+            if isinstance(row, dict):
+                out_items[idx] = row
+        try:
+            for p in sorted(parts_dir.glob("????????.json")):
+                try:
+                    idx = int(p.stem)
+                except ValueError:
+                    continue
+                if idx in out_items:
+                    continue
+                try:
+                    row = json.loads(p.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if isinstance(row, dict):
+                    out_items[idx] = row
+                    out_done.add(idx)
+                    logger.info("Checkpoint recovery: indice %s ripreso da part orfano.", idx)
+        except OSError:
+            pass
+        logger.info("Checkpoint caricato (sharded): %s elementi.", len(out_done))
+        return out_done, out_items, False
+
+    legacy_inline_on_disk = True
     done = payload.get("completed_indices", [])
     items = payload.get("results_by_index", {})
-    out_done: Set[int] = set()
-    out_items: Dict[int, Dict[str, Any]] = {}
+    out_done = set()
+    out_items = {}
     if isinstance(done, list):
         for v in done:
             if isinstance(v, int) and v >= 0:
@@ -730,7 +819,52 @@ def load_checkpoint(checkpoint_path: Path) -> Tuple[Set[int], Dict[int, Dict[str
                 out_items[idx] = v
                 out_done.add(idx)
     logger.info("Checkpoint caricato: %s elementi completati.", len(out_done))
-    return out_done, out_items
+    return out_done, out_items, legacy_inline_on_disk
+
+
+def checkpoint_parts_dir(checkpoint_path: Path) -> Path:
+    """Directory dei record ``NNNNNNNN.json`` accanto al manifest checkpoint."""
+    return checkpoint_path.with_name(checkpoint_path.name + ".parts")
+
+
+def _write_checkpoint_part_atomic(parts_dir: Path, idx: int, record: Dict[str, Any]) -> None:
+    parts_dir.mkdir(parents=True, exist_ok=True)
+    part_path = parts_dir / f"{idx:08d}.json"
+    tmp = part_path.with_suffix(part_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, part_path)
+
+
+def save_checkpoint_sharded_atomic(
+    checkpoint_path: Path,
+    completed_indices: Set[int],
+    results_by_index: Dict[int, Dict[str, Any]],
+    *,
+    dirty_indices: Optional[Set[int]] = None,
+    write_all_parts: bool = False,
+) -> None:
+    """
+    Manifest compatto + un JSON per indice. ``dirty_indices`` limita i part riscritti;
+    con ``write_all_parts`` si ignorano i dirty e si riserializza tutto ``results_by_index``.
+    """
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    parts_dir = checkpoint_parts_dir(checkpoint_path)
+    if write_all_parts or dirty_indices is None:
+        to_write = sorted(results_by_index.keys())
+    else:
+        to_write = sorted(i for i in dirty_indices if i in results_by_index)
+    for idx in to_write:
+        _write_checkpoint_part_atomic(parts_dir, idx, results_by_index[idx])
+    manifest = {
+        "checkpoint_format": CHECKPOINT_FORMAT_SHARDED_V1,
+        "completed_indices": sorted(completed_indices),
+        "parts_dir": parts_dir.name,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    tmp = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, checkpoint_path)
+    logger.info("Checkpoint salvato (sharded): %s", checkpoint_path)
 
 
 def save_checkpoint_atomic(
@@ -748,6 +882,26 @@ def save_checkpoint_atomic(
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, checkpoint_path)
     logger.info("Checkpoint salvato: %s", checkpoint_path)
+
+
+def write_json_array_indented_atomic(out_path: Path, records: Sequence[Dict[str, Any]]) -> None:
+    """
+    Scrive un array JSON pretty-printed senza costruire l'intera serializzazione in una stringa.
+
+    Riduce il picco RAM rispetto a ``write_text(json.dumps(...))`` su output molto grandi.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out_path.with_suffix(out_path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write("[")
+        for i, rec in enumerate(records):
+            if i:
+                fh.write(",")
+            fh.write("\n")
+            json.dump(rec, fh, ensure_ascii=False, indent=2)
+        fh.write("\n]")
+        fh.write("\n")
+    os.replace(tmp, out_path)
 
 
 def match_previous_coin_record(
@@ -3601,6 +3755,7 @@ def _scrape_one_coin(
                     f"download immagini disabilitato (--no-img); path ripristinati da disco se presenti nel JSON precedente",
                     flush=True,
                 )
+            del ocre_soup
             break
         except Exception as e:
             retryable = _is_retryable_request_error(e) or isinstance(e, ParseProcessingError)
@@ -3665,8 +3820,12 @@ def scrape_all(
     outage_guard = OutageGuard(ft_cfg)
     checkpoint_done: Set[int] = set()
     checkpoint_results: Dict[int, Dict[str, Any]] = {}
+    legacy_inline_ckpt = False
     if checkpoint_cfg is not None:
-        checkpoint_done, checkpoint_results = load_checkpoint(checkpoint_cfg.path)
+        checkpoint_done, checkpoint_results, legacy_inline_ckpt = load_checkpoint(checkpoint_cfg.path)
+    use_sharded_ckpt = checkpoint_cfg is not None and checkpoint_cfg.sharded
+    checkpoint_dirty: Set[int] = set()
+    needs_full_sharded_flush = bool(use_sharded_ckpt and legacy_inline_ckpt)
 
     worker_fn = partial(
         _scrape_one_coin,
@@ -3689,15 +3848,35 @@ def scrape_all(
         logger.info("Resume da checkpoint: salto %s elementi gia' completati.", len(checkpoint_done))
     completed_since_save = 0
 
+    def persist_checkpoint(*, reset_periodic_counter: bool) -> None:
+        nonlocal needs_full_sharded_flush, completed_since_save
+        if checkpoint_cfg is None:
+            return
+        if use_sharded_ckpt:
+            save_checkpoint_sharded_atomic(
+                checkpoint_cfg.path,
+                checkpoint_done,
+                out_by_idx,
+                dirty_indices=None if needs_full_sharded_flush else set(checkpoint_dirty),
+                write_all_parts=needs_full_sharded_flush,
+            )
+            checkpoint_dirty.clear()
+            needs_full_sharded_flush = False
+        else:
+            save_checkpoint_atomic(checkpoint_cfg.path, checkpoint_done, out_by_idx)
+        if reset_periodic_counter:
+            completed_since_save = 0
+
     if workers == 1:
         for ir in to_run:
             idx = ir[0]
             out_by_idx[idx] = worker_fn(ir)
             checkpoint_done.add(idx)
+            if use_sharded_ckpt:
+                checkpoint_dirty.add(idx)
             completed_since_save += 1
             if checkpoint_cfg is not None and completed_since_save >= max(1, checkpoint_cfg.frequency_items):
-                save_checkpoint_atomic(checkpoint_cfg.path, checkpoint_done, out_by_idx)
-                completed_since_save = 0
+                persist_checkpoint(reset_periodic_counter=True)
     else:
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futs = {ex.submit(worker_fn, ir): ir[0] for ir in to_run}
@@ -3705,13 +3884,14 @@ def scrape_all(
                 idx = futs[fut]
                 out_by_idx[idx] = fut.result()
                 checkpoint_done.add(idx)
+                if use_sharded_ckpt:
+                    checkpoint_dirty.add(idx)
                 completed_since_save += 1
                 if checkpoint_cfg is not None and completed_since_save >= max(1, checkpoint_cfg.frequency_items):
-                    save_checkpoint_atomic(checkpoint_cfg.path, checkpoint_done, out_by_idx)
-                    completed_since_save = 0
+                    persist_checkpoint(reset_periodic_counter=True)
 
     if checkpoint_cfg is not None:
-        save_checkpoint_atomic(checkpoint_cfg.path, checkpoint_done, out_by_idx)
+        persist_checkpoint(reset_periodic_counter=False)
     out = [out_by_idx[i] for i in range(len(urls)) if i in out_by_idx]
 
     if timing_stats is not None:
@@ -3972,8 +4152,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=1,
         help=(
             "thread per monete distinte (default 1 = stesso ordine JSON di sempre, niente race su fetch_cache). "
-            "Valori > 1 pipeline in parallelo OCRE+esempi+download per URL diversi; stesso -H/--min-host-interval "
-            "condiviso tra thread."
+            "Valori > 1 aumentano throughput ma anche uso RAM (sessioni/pagine concorrenti). "
+            "``--low-memory`` forza 1. Stesso -H/--min-host-interval condiviso tra thread."
         ),
     )
     parser.add_argument(
@@ -4017,7 +4197,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--healthcheck-interval-sec", type=float, default=30.0, metavar="SEC", help="intervallo health-check durante pausa outage")
     parser.add_argument("--checkpoint-path", default=None, metavar="PATH", help="path checkpoint (default: <output>.checkpoint.json)")
     parser.add_argument("--checkpoint-frequency", type=int, default=10, metavar="N", help="salva checkpoint ogni N monete completate")
+    parser.add_argument(
+        "--checkpoint-sharded",
+        action="store_true",
+        help=(
+            "checkpoint su manifest JSON + cartella \"<checkpoint>.parts\" (un file per indice); "
+            "a ogni salvataggio riserializza solo i record nuovi/dirty, riducendo picchi RAM/CPU. "
+            "Legge ancora i checkpoint monolitici legacy (results_by_index nel file)."
+        ),
+    )
+    parser.add_argument(
+        "--low-memory",
+        action="store_true",
+        help="preset: forza --workers 1 e abilita --checkpoint-sharded (meno RAM, throughput tipicamente minore).",
+    )
     args = parser.parse_args(argv)
+
+    if getattr(args, "low_memory", False):
+        args.workers = 1
+        args.checkpoint_sharded = True
 
     if args.cli_input is not None and args.input_file is not None:
         parser.error("specifica solo FILE posizionale oppure solo -i/--input, non entrambi")
@@ -4100,9 +4298,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         checkpoint_cfg=CheckpointConfig(
             path=checkpoint_path,
             frequency_items=max(1, args.checkpoint_frequency),
+            sharded=bool(getattr(args, "checkpoint_sharded", False)),
         ),
     )
-    out_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_array_indented_atomic(out_path, results)
     processed = len(results)
     failed = sum(1 for r in results if normalize_text(str(r.get("name", ""))).startswith("__error__"))
     skipped = max(0, len(urls) - processed)
