@@ -13,14 +13,24 @@ e TLS tramite ``utils.download`` (``certifi``, fallback solo su ``SSLError``).
 Scraping interno (prima della serializzazione): ``name``, ``ric_id``, ``authority``, ``description``
 (``date``, ``mint``, ``denomination``, ``material``, ``subjects`` come testo), ``obverse`` / ``reverse``.
 
-Output JSON (record moneta):
+Output JSON (record moneta): ordine canonico delle chiavi di primo livello (Python 3.7+,
+``json.dump(..., indent=2)``) come per l'export NumisRoma:
 
-- ``_id`` (slug da ``ric_id``), ``reference`` / ``references`` (RIC strutturato), ``title.en`` uguale al
-  ``name`` estratto (verbatim, senza riformulazioni), ``coinage`` solo ``date`` numerica ``{ from, to }``
-  (BCE come negativi), senza ``culture`` né ``period``, ``authority`` / ``classification`` con valori stringa (slug),
-  ``descriptions`` (legend / ``type`` e opz. ``portrait`` come stringhe testuali OCRE),
-  ``subjects`` slug, ``images`` con ``license`` identica al fetch (nessun enum abbreviato), ``source`` dedotto,
-  ``copyright_holder``, ``files`` con path locali, ``created_at`` / ``updated_at`` (UTC ISO), ``source_ocre_url``.
+1. ``_id`` (slug da ``ric_id`` / tipo OCRE)
+2. ``authority`` — ``{ issuer, dynasty }`` (slug)
+3. ``classification`` — ``{ denomination, material, mint }`` (slug)
+4. ``coinage`` — solo ``date`` numerica ``{ from, to }`` (BCE come negativi) se ricavabile dalle
+   stringhe data OCRE; se non c'è un intervallo/anno parsabile resta ``{}`` (nessuna chiave
+   ``culture`` / ``period``)
+5. ``created_at`` — UTC ISO-8601 con suffisso ``Z`` (batch run)
+6. ``descriptions`` — ``obverse``: ``legend``, ``type`` e opz. ``portrait``; ``reverse``: ``legend``, ``type``
+7. ``images`` — array di set (``[]`` se assenti); per set v. ``_serialized_images_item`` (ordine:
+   ``index``, ``layout``, ``license``, ``source``, ``copyright_holder``, ``files``)
+8. ``reference`` — un oggetto RIC strutturato; ``references`` — array di lunghezza 1 con lo stesso oggetto
+9. ``source_ocre_url`` — URL pagina OCRE normalizzato (host ``numismatics.org``: query ``lang=en``)
+10. ``subjects`` — slug
+11. ``title`` — ``{ "en": <name verbatim> }``
+12. ``updated_at`` — come ``created_at`` (stesso valore per record nella stessa run)
 
 Riesecuzione (--stesso ``-o``): se sul disco sono già presenti file ai path salvati nel
 JSON e il layout inferito coincide con ``layout`` salvato per quel set,
@@ -543,11 +553,12 @@ def coinage_date_from_description_dates(date_strings: List[str]) -> Optional[Dic
 
 def record_to_export_payload(record: Dict[str, Any], *, page_url: str) -> Dict[str, Any]:
     """
-    Trasforma il record interno post-scrape nel layout JSON target (v. ``es_output.json``),
-    senza ``coinage.culture`` / ``coinage.period``; ``title.en`` = ``name`` verbatim;
-    ``issuer`` / classificazione come stringhe slug; ``dynasty`` come slug con eventuale
-    rimozione del solo suffisso ridondante ``_dynasty`` (vedi ``normalize_dynasty_slug``);
-    ``descriptions.*.type`` come stringa.
+    Trasforma il record interno post-scrape nel layout JSON target (ordine chiavi NumisRoma).
+
+    ``coinage``: solo ``date`` ``{ from, to }`` se parsabile dalle date in descrizione; altrimenti ``{}``.
+    ``title.en`` = ``name`` verbatim; ``authority`` / ``classification`` come slug; ``dynasty`` con
+    eventuale rimozione del suffisso ridondante ``_dynasty`` (``normalize_dynasty_slug``).
+    ``source_ocre_url``: per OCRE su ``numismatics.org`` query ``lang=en`` (``force_lang_en_on_input_url``).
     """
     ric_id = normalize_text(str(record.get("ric_id") or ""))
     doc_id = ocre_type_id_to_doc_id(ric_id) if ric_id else slugify_es(str(record.get("name") or "coin"))
@@ -610,20 +621,21 @@ def record_to_export_payload(record: Dict[str, Any], *, page_url: str) -> Dict[s
             images_out.append(dict(row))
 
     ts = batch_export_timestamp_utc_iso()
+    source_url = force_lang_en_on_input_url(normalize_text(page_url))
     return {
         "_id": doc_id,
-        "reference": dict(reference_obj),
-        "references": references_list,
-        "title": title_obj,
-        "coinage": coinage,
         "authority": authority_out,
         "classification": classification,
-        "descriptions": descriptions_out,
-        "subjects": subjects_out,
-        "images": images_out,
+        "coinage": coinage,
         "created_at": ts,
+        "descriptions": descriptions_out,
+        "images": images_out,
+        "reference": dict(reference_obj),
+        "references": references_list,
+        "source_ocre_url": source_url,
+        "subjects": subjects_out,
+        "title": title_obj,
         "updated_at": ts,
-        "source_ocre_url": normalize_text(page_url),
     }
 
 
@@ -687,8 +699,17 @@ SOURCE_OCRE_URL_KEY = "source_ocre_url"
 
 
 def normalize_ocre_source_key(url: str) -> str:
-    """Chiave stabile per abbinare un record a una run precedente (URL OCRE richiesto)."""
-    return normalize_text(url).lower()
+    """
+    Chiave stabile per abbinare un record a una run precedente (URL OCRE richiesto).
+
+    Per ``numismatics.org`` applica ``force_lang_en_on_input_url`` prima del confronto, così
+    ``lang=it``, ``lang=en`` o assenza di ``lang`` sullo stesso tipo OCRE collidono (allineato
+    a ``source_ocre_url`` nell'export).
+    """
+    base = normalize_text(url)
+    if not base:
+        return ""
+    return force_lang_en_on_input_url(base).lower()
 
 
 def _shallow_row_copy(row: Any) -> Any:
@@ -4183,9 +4204,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         help=(
             "For URLs loaded from the input JSON on numismatics.org only: remove every lang query "
             "parameter (any value) and add a single lang=en (OCRE type page in English). Does not alter "
-            "example/collection links parsed from HTML. Resume: matching by source_ocre_url vs "
-            "previous output may miss if the saved URL used a different lang value; index fallback "
-            "still applies when previous and current URL lists have the same length."
+            "example/collection links parsed from HTML. Export writes canonical ``source_ocre_url`` "
+            "(lang=en on numismatics.org); resume compares via the same normalization for that host. "
+            "Index fallback still applies when previous and current URL lists have the same length."
         ),
     )
     parser.add_argument("--max-request-retries", type=int, default=4, metavar="N", help="retry massimi per singola richiesta HTTP")

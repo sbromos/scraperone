@@ -101,6 +101,27 @@ Lo scraper ora include retry robusti, checkpoint persistenti e pausa automatica 
 - `--checkpoint-path` (default: `<output>.checkpoint.json`)
 - `--checkpoint-frequency` (default `10`)
 
+## Formato output JSON (coin type)
+
+Ogni record nella lista salvata dall'export usa questo ordine delle chiavi al primo livello
+(inserzione dict Python 3.7+: `json.dump(..., indent=2)` leggibile e stabile, come in NumisRoma):
+
+`_id`, `authority`, `classification`, `coinage`, `created_at`, `descriptions`, `images`, `reference`, `references`, `source_ocre_url`, `subjects`, `title`, `updated_at`.
+
+Campi principali:
+
+- **`_id`**: slug derivato dal tipo OCRE (`ric_id`).
+- **`authority`**: `{ "issuer", "dynasty" }` (slug).
+- **`classification`**: `{ "denomination", "material", "mint" }` (slug).
+- **`coinage`**: solo una chiave `date` valorizzata come `{ "from", "to" }` (interi anni; negativi per a.C.) quando il testo delle date nella descrizione OCRE è parsabile; se non è parsabile rimane `{}` (nessuna `culture` / `period`).
+- **`created_at` / `updated_at`**: stesso UTC per tutti i record nella stessa run, ISO 8601 con suffisso `Z`.
+- **`descriptions`**: `obverse` con `legend`, `type` e opzionale `portrait`; `reverse` con `legend`, `type`.
+- **`images`**: array di set; vale `[]` se non ci sono immagini. Ogni elemento mantiene l'ordine `index`, `layout` (`split` o `unified`), `license`, `source`, `copyright_holder`, `files` (per `split`: `obverse` e/o `reverse`; per `unified`: `unified`). URL pubblici vs path relativi dipendono da R2/`R2_PUBLIC_BASE_URL` e da `finalize_file` (senza duplicare logica di path lato exporter).
+- **`reference`** / **`references`**: oggetto RIC unico anche in lista `references` (lunghezza 1).
+- **`source_ocre_url`**: URL della pagina OCRE; per `numismatics.org` la query include `lang=en`.
+- **`subjects`**: slug.
+- **`title`**: `{ "en": "<name verbatim dall'OCRE>" }`.
+
 ### Nota migrazione
 
 Non sono richieste modifiche ai file di input/output esistenti. Se non specifichi nulla, il nuovo checkpoint viene creato automaticamente vicino all'output JSON.
