@@ -4143,7 +4143,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         metavar="PATH",
         help=(
             "cartella/prefisso di destinazione nel bucket R2 per questa run "
-            "(es. roman/2026 produce roman/2026/images/...); se omessa usa "
+            "(es. rrc_images produce rrc_images/... sostituendo la radice locale images/); se omessa usa "
             "R2_BUCKET_FOLDER dal .env, oppure la radice del bucket"
         ),
     )

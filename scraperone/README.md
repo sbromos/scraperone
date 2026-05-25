@@ -54,7 +54,7 @@ R2_ACCOUNT_ID=your_account_id
 R2_ACCESS_KEY_ID=your_access_key_id
 R2_SECRET_ACCESS_KEY=your_secret_access_key
 R2_BUCKET_NAME=your_bucket_name
-R2_BUCKET_FOLDER=roman/2026
+R2_BUCKET_FOLDER=rrc_images
 R2_PUBLIC_BASE_URL=https://cdn.example.com/assets
 ```
 
@@ -66,15 +66,15 @@ Quando `USE_R2_UPLOAD` e' `false` (default), il comportamento resta invariato e 
 ritornati i path locali relativi nel campo `images[].files`.
 
 Quando `USE_R2_UPLOAD` e' `true`, i file vengono prima scaricati localmente e poi caricati
-su R2 mantenendo la stessa chiave relativa (`images/...`). Se imposti `R2_BUCKET_FOLDER`,
-questa viene anteposta alla chiave (ad esempio `roman/2026/images/...`). Il valore salvato in
+su R2 con chiave `images/...` se `R2_BUCKET_FOLDER` e' vuota. Se imposti `R2_BUCKET_FOLDER`,
+questa sostituisce la radice locale `images/` (ad esempio `rrc_images/...`). Il valore salvato in
 `images[].files` diventa l'URL finale (da `R2_PUBLIC_BASE_URL` se configurata, altrimenti
 URL endpoint/bucket/key).
 
 La cartella puo' essere scelta per ogni esecuzione, prevalendo sul valore nel `.env`:
 
 ```bash
-python scraperissimo.py --bucket-folder roman/2026
+python scraperissimo.py --bucket-folder rrc_images
 ```
 
 ## Error handling

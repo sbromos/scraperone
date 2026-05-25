@@ -114,7 +114,12 @@ class R2ImageStorageBackend:
             return None
         key = relative_path.replace("\\", "/").lstrip("/")
         if self._config.bucket_folder:
-            key = f"{self._config.bucket_folder}/{key}"
+            local_images_prefix = "images/"
+            if key.startswith(local_images_prefix):
+                key = key[len(local_images_prefix):]
+            elif key == "images":
+                key = ""
+            key = f"{self._config.bucket_folder}/{key}".rstrip("/")
         content_type = mimetypes.guess_type(local_path.name)[0] or "application/octet-stream"
         try:
             self._client.upload_file(
