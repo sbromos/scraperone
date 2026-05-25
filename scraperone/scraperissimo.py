@@ -509,6 +509,33 @@ def parse_ric_reference(ric_id: str) -> Dict[str, Any]:
     return {"system": "RIC", "series": series_slug, "number": num, "suffix": suff}
 
 
+def parse_rrc_reference(rrc_id: str) -> Dict[str, Any]:
+    """Oggetto ``reference`` / voce ``references`` (RRC) da id CRRO ``rrc-...``."""
+    blank: Dict[str, Any] = {"system": "RRC", "series": "", "number": None, "suffix": ""}
+    rid = normalize_text(rrc_id).strip().lower()
+    if not rid:
+        return dict(blank)
+    m = re.match(r"^rrc-(\d+)(?:\.(\d+))?([a-z]*)$", rid, re.I)
+    if not m:
+        return dict(blank)
+    major = int(m.group(1))
+    minor = m.group(2)
+    suff = (m.group(3) or "").upper()
+    if minor is not None:
+        return {"system": "RRC", "series": f"rrc_{major}", "number": int(minor), "suffix": suff}
+    return {"system": "RRC", "series": "rrc", "number": major, "suffix": suff}
+
+
+def parse_reference(coin_type_id: str) -> Dict[str, Any]:
+    """Parser riferimento con branch per sistemi supportati (RIC, RRC)."""
+    rid = normalize_text(coin_type_id).strip().lower()
+    if rid.startswith("ric."):
+        return parse_ric_reference(rid)
+    if rid.startswith("rrc-"):
+        return parse_rrc_reference(rid)
+    return parse_ric_reference(rid)
+
+
 def parse_year_token_for_coinage(token: str) -> Optional[int]:
     """Anno numerico: BCE / a.C. / BC → negativo; CE / AD / d.C. → positivo."""
     t = normalize_text(token)
@@ -562,7 +589,7 @@ def record_to_export_payload(record: Dict[str, Any], *, page_url: str) -> Dict[s
     """
     ric_id = normalize_text(str(record.get("ric_id") or ""))
     doc_id = ocre_type_id_to_doc_id(ric_id) if ric_id else slugify_es(str(record.get("name") or "coin"))
-    reference_obj = parse_ric_reference(ric_id)
+    reference_obj = parse_reference(ric_id)
     references_list = [dict(reference_obj)]
 
     name_now = record.get("name")
@@ -677,22 +704,23 @@ def force_lang_en_on_input_url(url: str) -> str:
     return urlunparse((p.scheme, p.netloc, p.path, p.params, new_query, p.fragment))
 
 
-_OCRE_TYPE_PATH_PREFIX = "/ocre/id/"
+_COIN_TYPE_PATH_PREFIXES = ("/ocre/id/", "/crro/id/")
 
 
 def extract_ocre_type_id_from_url(url: str) -> str:
     """
-    Restituisce il segmento di path dopo ``/ocre/id/`` (senza query né fragment), oppure ``""``
-    se host/path non corrispondono a un URL tipo OCRE atteso (es. numismatics.org).
+    Restituisce il segmento di path dopo ``/ocre/id/`` o ``/crro/id/`` (senza query né fragment),
+    oppure ``""`` se host/path non corrispondono a un URL tipo atteso (es. numismatics.org).
     """
     p = urlparse((url or "").strip())
     if "numismatics.org" not in (p.netloc or "").lower():
         return ""
     path = (p.path or "").rstrip("/")
-    if not path.startswith(_OCRE_TYPE_PATH_PREFIX):
-        return ""
-    rid = path[len(_OCRE_TYPE_PATH_PREFIX) :]
-    return rid if rid else ""
+    for prefix in _COIN_TYPE_PATH_PREFIXES:
+        if path.startswith(prefix):
+            rid = path[len(prefix) :]
+            return rid if rid else ""
+    return ""
 
 
 SOURCE_OCRE_URL_KEY = "source_ocre_url"

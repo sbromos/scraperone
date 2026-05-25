@@ -125,7 +125,7 @@ Campi principali:
 - **`created_at` / `updated_at`**: stesso UTC per tutti i record nella stessa run, ISO 8601 con suffisso `Z`.
 - **`descriptions`**: `obverse` con `legend`, `type` e opzionale `portrait`; `reverse` con `legend`, `type`.
 - **`images`**: array di set; vale `[]` se non ci sono immagini. Ogni elemento mantiene l'ordine `index`, `layout` (`split` o `unified`), `license`, `source`, `copyright_holder`, `files` (per `split`: `obverse` e/o `reverse`; per `unified`: `unified`). URL pubblici vs path relativi dipendono da R2/`R2_PUBLIC_BASE_URL` e da `finalize_file` (senza duplicare logica di path lato exporter).
-- **`reference`** / **`references`**: oggetto RIC unico anche in lista `references` (lunghezza 1).
+- **`reference`** / **`references`**: oggetto riferimento strutturato (RIC o RRC) e copia in lista `references` (lunghezza 1).
 - **`source_ocre_url`**: URL della pagina OCRE; per `numismatics.org` la query include `lang=en`.
 - **`subjects`**: slug.
 - **`title`**: `{ "en": "<name verbatim dall'OCRE>" }`.
