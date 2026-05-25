@@ -8,7 +8,7 @@ Gallica ARK) oppure
 legge dal markup OCRE gli esempi British Museum (URL oggetto + thumbnail ``media.britishmuseum.org``,
 senza GET alle pagine collection BM). Le righe di log ``supported: no`` su link BM di sola
 navigazione o CDN includono un ``hint``; gli scarichi dal CDN usano ``Referer`` BM dove serve
-e TLS tramite ``utils.download`` (``certifi``, fallback solo su ``SSLError``).
+e TLS tramite ``utils.download`` (fallback solo su ``SSLError``).
 
 Scraping interno (prima della serializzazione): ``name``, ``ric_id``, ``authority``, ``description``
 (``date``, ``mint``, ``denomination``, ``material``, ``subjects`` come testo), ``obverse`` / ``reverse``.
@@ -3375,7 +3375,7 @@ def download_image(
 
     Per CDN con policy referer (BM / Tongeren), di fronte a HTTP 403 si ritenta con
     ``Referer`` istituzionale e ``Accept`` simile al browser. La verifica TLS usa
-    ``certifi``; su ``SSLError`` si ritenta senza verifica (log in ``utils.download``).
+    il trust store SSL predefinito; su ``SSLError`` si ritenta senza verifica (log in ``utils.download``).
     """
     if not (url or "").strip():
         return False
@@ -3928,7 +3928,7 @@ def run_bm_ocre_regression_smoke() -> int:
     Test di regressione contro rete: pagina OCRE tipo con esempi British Museum.
 
     Verifica classificazione BM, ``parse_bm_example_from_ocre_soup`` → ``unified_image``,
-    licenza BM fissata. Tenta il salvataggio di ``unified.jpg`` (TLS con ``certifi`` e,
+    licenza BM fissata. Tenta il salvataggio di ``unified.jpg`` (TLS verificato e,
     solo se necessario, retry senza verifica come in ``utils.download``). Se il download e
     il probe HEAD falliscono comunque, distingue ``PARTIAL OK`` (solo TLS oltre il fallback)
     da ``FAIL`` (HTTP/rete).
@@ -4136,6 +4136,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         ),
     )
     parser.add_argument(
+        "--bucket-folder",
+        "--r2-folder",
+        dest="bucket_folder",
+        default=None,
+        metavar="PATH",
+        help=(
+            "cartella/prefisso di destinazione nel bucket R2 per questa run "
+            "(es. roman/2026 produce roman/2026/images/...); se omessa usa "
+            "R2_BUCKET_FOLDER dal .env, oppure la radice del bucket"
+        ),
+    )
+    parser.add_argument(
         "-R",
         "-reset",
         "--reset",
@@ -4295,7 +4307,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             flush=True,
         )
     storage_backend = wrap_storage_delete_local_after_upload(
-        resolve_image_storage_from_env(),
+        resolve_image_storage_from_env(bucket_folder=args.bucket_folder),
         enabled=bool(getattr(args, "delete_local_after_upload", False)),
     )
     results = scrape_all(

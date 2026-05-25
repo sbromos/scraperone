@@ -31,6 +31,7 @@ class R2Config:
     secret_access_key: str
     bucket_name: str
     public_base_url: str
+    bucket_folder: str = ""
 
     @property
     def endpoint_url(self) -> str:
@@ -44,7 +45,11 @@ def _env_flag_true(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
 
 
-def _load_r2_config_from_env() -> Optional[R2Config]:
+def _normalize_bucket_folder(folder: str) -> str:
+    return "/".join(part for part in folder.replace("\\", "/").split("/") if part)
+
+
+def _load_r2_config_from_env(*, bucket_folder: Optional[str] = None) -> Optional[R2Config]:
     values = {
         "R2_ACCOUNT_ID": (os.getenv("R2_ACCOUNT_ID") or "").strip(),
         "R2_ACCESS_KEY_ID": (os.getenv("R2_ACCESS_KEY_ID") or "").strip(),
@@ -59,12 +64,18 @@ def _load_r2_config_from_env() -> Optional[R2Config]:
         )
         return None
     public_base = (os.getenv("R2_PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    selected_folder = (
+        os.getenv("R2_BUCKET_FOLDER", "")
+        if bucket_folder is None
+        else bucket_folder
+    )
     return R2Config(
         account_id=values["R2_ACCOUNT_ID"],
         access_key_id=values["R2_ACCESS_KEY_ID"],
         secret_access_key=values["R2_SECRET_ACCESS_KEY"],
         bucket_name=values["R2_BUCKET_NAME"],
         public_base_url=public_base,
+        bucket_folder=_normalize_bucket_folder(selected_folder.strip()),
     )
 
 
@@ -77,7 +88,6 @@ class R2ImageStorageBackend:
         self._client_error_types = ()
         try:
             import boto3
-            import certifi
             from botocore.config import Config as BotoCoreConfig
             from botocore.exceptions import BotoCoreError, ClientError
         except Exception as exc:
@@ -89,7 +99,7 @@ class R2ImageStorageBackend:
             aws_access_key_id=config.access_key_id,
             aws_secret_access_key=config.secret_access_key,
             region_name="auto",
-            verify=certifi.where(),
+            verify=True,
             config=BotoCoreConfig(retries={"max_attempts": 3, "mode": "standard"}),
         )
 
@@ -103,6 +113,8 @@ class R2ImageStorageBackend:
             logger.error("R2 upload skipped: local file missing/empty (%s)", local_path)
             return None
         key = relative_path.replace("\\", "/").lstrip("/")
+        if self._config.bucket_folder:
+            key = f"{self._config.bucket_folder}/{key}"
         content_type = mimetypes.guess_type(local_path.name)[0] or "application/octet-stream"
         try:
             self._client.upload_file(
@@ -186,11 +198,11 @@ def wrap_storage_delete_local_after_upload(
     return _DeleteLocalAfterRemoteUploadWrapper(backend)
 
 
-def resolve_image_storage_from_env() -> ImageStorageBackend:
+def resolve_image_storage_from_env(*, bucket_folder: Optional[str] = None) -> ImageStorageBackend:
     use_r2 = _env_flag_true("USE_R2_UPLOAD", default=False)
     if not use_r2:
         return LocalImageStorageBackend()
-    cfg = _load_r2_config_from_env()
+    cfg = _load_r2_config_from_env(bucket_folder=bucket_folder)
     if cfg is None:
         logger.warning("Falling back to local image storage due to invalid R2 config.")
         return LocalImageStorageBackend()

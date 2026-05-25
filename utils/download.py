@@ -1,5 +1,5 @@
 """
-Download immagini via HTTP con verifica SSL (certifi) e fallback solo su SSLError.
+Download immagini via HTTP con verifica SSL e fallback solo su SSLError.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Union
 
-import certifi
 import requests
 from urllib3.exceptions import InsecureRequestWarning
 
@@ -52,8 +51,8 @@ def download_image(
     """
     Scarica ``url`` in ``filename`` (path completo del file) con streaming.
 
-    - ``verify=certifi.where()``; solo in caso di ``SSLError`` un secondo tentativo
-      con ``verify=False`` (con log).
+    - Usa il trust store SSL predefinito; solo in caso di ``SSLError`` tenta con
+      ``verify=False`` (con log).
     - Risposte HTTP non ok: ``raise_for_status``; l'eccezione diventa ``False`` e il
       file parziale viene rimosso (compatibilità con i chiamanti esistenti).
     - ``header_overlays``: sequenza di mapping da unire agli header base; si passa al
@@ -78,7 +77,7 @@ def download_image(
 
     for oi, merged in enumerate(merged_list):
         for use_insecure in (False, True):
-            verify: Union[bool, str] = False if use_insecure else certifi.where()
+            verify = not use_insecure
             warn_ctx = (
                 warnings.catch_warnings()
                 if use_insecure
@@ -135,13 +134,13 @@ def http_request_with_ssl_fallback(
     **kwargs: Any,
 ) -> requests.Response:
     """
-    Una richiesta HTTP (es. ``HEAD`` / ``GET`` non stream) con ``certifi`` e,
-    solo in caso di ``SSLError``, ``verify=False`` (con log, stessa politica di
-    ``download_image``).
+    Una richiesta HTTP (es. ``HEAD`` / ``GET`` non stream) con il trust store SSL
+    predefinito; solo in caso di ``SSLError``, ``verify=False`` (con log, stessa
+    politica di ``download_image``).
     """
     merged = _base_headers(headers)
     for use_insecure in (False, True):
-        verify: Union[bool, str] = False if use_insecure else certifi.where()
+        verify = not use_insecure
         warn_ctx = (
             warnings.catch_warnings()
             if use_insecure
